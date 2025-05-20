@@ -1,0 +1,147 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenLayers Map with Geolocation</title>
+    <!-- Подключаем стили OpenLayers -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.2.1/ol.css">
+    <style>
+        html, body, #map {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        #map {
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <!-- Контейнер для карты -->
+    <div id="map"></div>
+    <!-- Подключаем OpenLayers -->
+    <script src="https://cdn.jsdelivr.net/npm/ol@10.2.1/dist/ol.js"></script>
+    <script>
+        // Создаем слой карты с OpenStreetMap
+        const mapLayer = new ol.layer.Tile({
+            source: new ol.source.OSM()
+        });
+
+        // Создаем векторный слой для маркера геолокации
+        const geolocationLayer = new ol.layer.Vector({
+            source: new ol.source.Vector(),
+            style: new ol.style.Style({
+                image: new ol.style.Circle({
+                    radius: 8,
+                    fill: new ol.style.Fill({color: 'blue'}),
+                    stroke: new ol.style.Stroke({color: 'white', width: 2})
+                })
+            })
+        });
+
+        // Создаем карту
+        const map = new ol.Map({
+            target: 'map',
+            layers: [mapLayer, geolocationLayer],
+            view: new ol.View({
+                center: ol.proj.fromLonLat([37.6173, 55.7558]), // Москва по умолчанию
+                zoom: 10
+            })
+        });
+
+        // Проверка протокола
+        if (window.location.protocol === 'file:') {
+            console.warn('Geolocation may not work with file://. Use a local server (e.g., python -m http.server).');
+        }
+
+        // Функция для добавления маркера геолокации
+        function showGeolocation(position) {
+            const coords = [position.coords.longitude, position.coords.latitude];
+            const coordinate = ol.proj.fromLonLat(coords);
+            
+            // Очищаем предыдущие маркеры
+            geolocationLayer.getSource().clear();
+            
+            // Добавляем маркер геолокации
+            const feature = new ol.Feature({
+                geometry: new ol.geom.Point(coordinate)
+            });
+            geolocationLayer.getSource().addFeature(feature);
+
+            // Центрируем карту на геолокации
+            map.getView().setCenter(coordinate);
+            map.getView().setZoom(14);
+        }
+
+        // Ошибка геолокации
+        function handleGeolocationError(error) {
+            let errorMessage;
+            switch (error.code) {
+                case error.PERMISSION_DENIED:
+                    errorMessage = 'Доступ к геолокации запрещен.';
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    errorMessage = 'Геолокация недоступна.';
+                    break;
+                case error.TIMEOUT:
+                    errorMessage = 'Превышено время ожидания геолокации.';
+                    break;
+                default:
+                    errorMessage = 'Неизвестная ошибка геолокации: ' + error.message;
+            }
+            console.error('Geolocation error:', errorMessage, error);
+        }
+
+        // Запрашиваем геолокацию при загрузке
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(showGeolocation, handleGeolocationError, {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            });
+        } else {
+            console.error('Geolocation is not supported by this browser.');
+        }
+    </script>
+</body>
+</html>
