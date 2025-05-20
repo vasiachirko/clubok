@@ -42,7 +42,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OpenLayers Map with Geolocation</title>
+    <title>OpenLayers Map with Geolocation and Route Tracking</title>
     <!-- Подключаем стили OpenLayers -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.2.1/ol.css">
     <style>
@@ -54,11 +54,51 @@
         #map {
             width: 100%;
         }
+        .button {
+            position: absolute;
+            top: 10px;
+            z-index: 1000;
+            padding: 10px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .button:hover {
+            background-color: #0056b3;
+        }
+        #geolocation-btn {
+            left: 10px;
+        }
+        #track-btn {
+            left: 170px;
+        }
+        #simulate-btn {
+            left: 330px;
+        }
+        #info {
+            position: absolute;
+            top: 50px;
+            left: 10px;
+            z-index: 1000;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 5px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
     <!-- Контейнер для карты -->
     <div id="map"></div>
+    <!-- Кнопки -->
+    <button id="geolocation-btn" class="button">Показать мое местоположение</button>
+    <button id="track-btn" class="button">Начать отслеживание</button>
+    <button id="simulate-btn" class="button">Начать имитацию</button>
+    <!-- Информация о геолокации -->
+    <div id="info">Ожидание геолокации...</div>
     <!-- Подключаем OpenLayers -->
     <script src="https://cdn.jsdelivr.net/npm/ol@10.2.1/dist/ol.js"></script>
     <script>
@@ -79,69 +119,225 @@
             })
         });
 
+        // Создаем векторный слой для маршрута
+        const routeLayer = new ol.layer.Vector({
+            source: new ol.source.Vector(),
+            style: new ol.style.Style({
+                stroke: new ol.style.Stroke({
+                    color: 'green',
+                    width: 3
+                })
+            })
+        });
+
         // Создаем карту
         const map = new ol.Map({
             target: 'map',
-            layers: [mapLayer, geolocationLayer],
+            layers: [mapLayer, geolocationLayer, routeLayer],
             view: new ol.View({
                 center: ol.proj.fromLonLat([37.6173, 55.7558]), // Москва по умолчанию
                 zoom: 10
             })
         });
 
-        // Проверка протокола
+        // Проверка окружения
         if (window.location.protocol === 'file:') {
-            console.warn('Geolocation may not work with file://. Use a local server (e.g., python -m http.server).');
+            alert('Внимание: Геолокация не работает через file://. Используйте локальный сервер или HTTPS.');
+            console.error('Geolocation requires HTTP/HTTPS, not file://');
+        }
+        if (!navigator.geolocation) {
+            alert('Ошибка: Ваш браузер не поддерживает геолокацию.');
+            console.error('Geolocation API is not supported.');
+            document.getElementById('info').textContent = 'Геолокация не поддерживается.';
         }
 
-        // Функция для добавления маркера геолокации
-        function showGeolocation(position) {
+        // Функция для вычисления расстояния между двумя точками (в метрах)
+        function haversineDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371e3; // Радиус Земли в метрах
+            const φ1 = lat1 * Math.PI / 180;
+            const φ2 = lat2 * Math.PI / 180;
+            const Δφ = (lat2 - lat1) * Math.PI / 180;
+            const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+            const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+                      Math.cos(φ1) * Math.cos(φ2) *
+                      Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c; // Расстояние в метрах
+        }
+
+        // Функция для обновления информации
+        function updateInfo(position, mode = 'real') {
+            const info = document.getElementById('info');
+            info.textContent = `${mode === 'real' ? 'Реальная' : 'Имитация'} геолокация: ` +
+                              `Широта: ${position.coords.latitude.toFixed(6)}, ` +
+                              `Долгота: ${position.coords.longitude.toFixed(6)}, ` +
+                              `Точность: ${position.coords.accuracy.toFixed(1)} м`;
+        }
+
+        // Функция для добавления маркера и маршрута
+        function handlePosition(position, mode = 'real') {
+            if (position.coords.accuracy > 30) {
+                console.warn('Игнорируем позицию: низкая точность', position.coords.accuracy);
+                return; // Игнорируем данные с точностью хуже 30 метров
+            }
+
             const coords = [position.coords.longitude, position.coords.latitude];
             const coordinate = ol.proj.fromLonLat(coords);
-            
-            // Очищаем предыдущие маркеры
+
+            // Очищаем маркер
             geolocationLayer.getSource().clear();
-            
-            // Добавляем маркер геолокации
+
+            // Добавляем маркер
             const feature = new ol.Feature({
                 geometry: new ol.geom.Point(coordinate)
             });
             geolocationLayer.getSource().addFeature(feature);
 
-            // Центрируем карту на геолокации
+            // Центрируем карту
             map.getView().setCenter(coordinate);
-            map.getView().setZoom(14);
+
+            // Проверяем расстояние до последней точки
+            if (lastPosition) {
+                const distance = haversineDistance(
+                    lastPosition.coords.latitude,
+                    lastPosition.coords.longitude,
+                    position.coords.latitude,
+                    position.coords.longitude
+                );
+                console.log('Distance to last point:', distance.toFixed(2), 'meters');
+
+                if (distance > 5) { // Порог 5 метров для помещения
+                    routeCoordinates.push(coordinate);
+                    routeLayer.getSource().clear();
+                    if (routeCoordinates.length > 1) {
+                        const routeFeature = new ol.Feature({
+                            geometry: new ol.geom.LineString(routeCoordinates)
+                        });
+                        routeLayer.getSource().addFeature(routeFeature);
+                    }
+                }
+            } else {
+                routeCoordinates.push(coordinate); // Первая точка
+            }
+
+            // Сохраняем позицию
+            lastPosition = position;
+
+            // Обновляем информацию
+            updateInfo(position, mode);
+
+            console.log(`${mode} position:`, {
+                latitude: coords[1],
+                longitude: coords[0],
+                accuracy: position.coords.accuracy + ' meters'
+            });
         }
 
-        // Ошибка геолокации
+        // Функция для обработки ошибок
         function handleGeolocationError(error) {
-            let errorMessage;
+            let errorMessage, advice;
             switch (error.code) {
                 case error.PERMISSION_DENIED:
                     errorMessage = 'Доступ к геолокации запрещен.';
+                    advice = 'Разрешите доступ в настройках браузера.';
                     break;
                 case error.POSITION_UNAVAILABLE:
                     errorMessage = 'Геолокация недоступна.';
+                    advice = 'Проверьте GPS/Wi-Fi и попробуйте выйти на открытое пространство.';
                     break;
                 case error.TIMEOUT:
-                    errorMessage = 'Превышено время ожидания геолокации.';
+                    errorMessage = 'Превышено время ожидания.';
+                    advice = 'Попробуйте снова.';
                     break;
                 default:
-                    errorMessage = 'Неизвестная ошибка геолокации: ' + error.message;
+                    errorMessage = 'Неизвестная ошибка: ' + error.message;
+                    advice = 'Попробуйте обновить страницу.';
             }
-            console.error('Geolocation error:', errorMessage, error);
+            console.error('Geolocation error:', { code: error.code, message: error.message });
+            document.getElementById('info').textContent = `${errorMessage} ${advice}`;
         }
 
-        // Запрашиваем геолокацию при загрузке
-        if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition(showGeolocation, handleGeolocationError, {
-                enableHighAccuracy: true,
-                timeout: 10000,
-                maximumAge: 0
-            });
-        } else {
-            console.error('Geolocation is not supported by this browser.');
-        }
+        // Переменные для отслеживания
+        let watchId = null;
+        let simulateInterval = null;
+        let lastPosition = null;
+        let routeCoordinates = [];
+
+        // Обработчик кнопки "Показать мое местоположение"
+        document.getElementById('geolocation-btn').addEventListener('click', function() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    position => handlePosition(position, 'real'),
+                    handleGeolocationError,
+                    { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+                );
+            } else {
+                document.getElementById('info').textContent = 'Геолокация не поддерживается.';
+                console.error('Geolocation API is not supported.');
+            }
+        });
+
+        // Обработчик кнопки "Начать/Остановить отслеживание"
+        const trackButton = document.getElementById('track-btn');
+        trackButton.addEventListener('click', function() {
+            if (watchId === null) {
+                if (navigator.geolocation) {
+                    watchId = navigator.geolocation.watchPosition(
+                        position => handlePosition(position, 'real'),
+                        handleGeolocationError,
+                        { enableHighAccuracy: true, timeout: 20000, maximumAge: 1000 }
+                    );
+                    trackButton.textContent = 'Остановить отслеживание';
+                    routeCoordinates = [];
+                    routeLayer.getSource().clear();
+                    lastPosition = null;
+                    console.log('Tracking started, watchId:', watchId);
+                } else {
+                    document.getElementById('info').textContent = 'Геолокация не поддерживается.';
+                    console.error('Geolocation API is not supported.');
+                }
+            } else {
+                navigator.geolocation.clearWatch(watchId);
+                watchId = null;
+                trackButton.textContent = 'Начать отслеживание';
+                console.log('Tracking stopped');
+            }
+        });
+
+        // Обработчик кнопки "Начать/Остановить имитацию"
+        const simulateButton = document.getElementById('simulate-btn');
+        simulateButton.addEventListener('click', function() {
+            if (simulateInterval === null) {
+                // Начать имитацию
+                let baseLat = 55.7558; // Москва
+                let baseLon = 37.6173;
+                simulateInterval = setInterval(() => {
+                    // Имитируем перемещение (сдвиг на ~15 метров)
+                    baseLat += 0.000135; // ~15 метров по широте
+                    baseLon += 0.0002;   // ~15 метров по долготе
+                    const simulatedPosition = {
+                        coords: {
+                            latitude: baseLat,
+                            longitude: baseLon,
+                            accuracy: 10 // Фиктивная точность
+                        }
+                    };
+                    handlePosition(simulatedPosition, 'simulate');
+                }, 2000); // Каждые 2 секунды для наглядности
+                simulateButton.textContent = 'Остановить имитацию';
+                routeCoordinates = [];
+                routeLayer.getSource().clear();
+                lastPosition = null;
+                console.log('Simulation started');
+            } else {
+                // Остановить имитацию
+                clearInterval(simulateInterval);
+                simulateInterval = null;
+                simulateButton.textContent = 'Начать имитацию';
+                console.log('Simulation stopped');
+            }
+        });
     </script>
 </body>
 </html>
