@@ -87,6 +87,7 @@
             padding: 5px;
             border-radius: 4px;
             font-size: 14px;
+            max-width: 300px;
         }
     </style>
 </head>
@@ -167,28 +168,32 @@
         }
 
         // Функция для обновления информации
-        function updateInfo(position, mode = 'real') {
+        function updateInfo(message, position = null, mode = 'real') {
             const info = document.getElementById('info');
-            info.textContent = `${mode === 'real' ? 'Реальная' : 'Имитация'} геолокация: ` +
-                              `Широта: ${position.coords.latitude.toFixed(6)}, ` +
-                              `Долгота: ${position.coords.longitude.toFixed(6)}, ` +
-                              `Точность: ${position.coords.accuracy.toFixed(1)} м`;
+            if (position) {
+                info.textContent = `${mode === 'real' ? 'Реальная' : 'Имитация'} геолокация: ` +
+                                  `Широта: ${position.coords.latitude.toFixed(6)}, ` +
+                                  `Долгота: ${position.coords.longitude.toFixed(6)}, ` +
+                                  `Точность: ${position.coords.accuracy.toFixed(1)} м`;
+            } else {
+                info.textContent = message;
+            }
         }
 
         // Функция для добавления маркера и маршрута
         function handlePosition(position, mode = 'real') {
-            if (position.coords.accuracy > 30) {
+            // Проверяем точность для реального режима
+            if (mode === 'real' && position.coords.accuracy > 50) {
                 console.warn('Игнорируем позицию: низкая точность', position.coords.accuracy);
-                return; // Игнорируем данные с точностью хуже 30 метров
+                updateInfo(`Позиция проигнорирована: точность ${position.coords.accuracy.toFixed(1)} м`, position, mode);
+                return;
             }
 
             const coords = [position.coords.longitude, position.coords.latitude];
             const coordinate = ol.proj.fromLonLat(coords);
 
-            // Очищаем маркер
+            // Обновляем маркер
             geolocationLayer.getSource().clear();
-
-            // Добавляем маркер
             const feature = new ol.Feature({
                 geometry: new ol.geom.Point(coordinate)
             });
@@ -197,35 +202,59 @@
             // Центрируем карту
             map.getView().setCenter(coordinate);
 
-            // Проверяем расстояние до последней точки
-            if (lastPosition) {
+            // Проверяем расстояние до последней добавленной точки маршрута
+            if (lastPosition && mode === 'real') {
                 const distance = haversineDistance(
                     lastPosition.coords.latitude,
                     lastPosition.coords.longitude,
                     position.coords.latitude,
                     position.coords.longitude
                 );
-                console.log('Distance to last point:', distance.toFixed(2), 'meters');
+                console.log('Distance to last route point:', distance.toFixed(2), 'meters');
 
-                if (distance > 5) { // Порог 5 метров для помещения
+                if (distance > 2) { // Порог 2 метра
                     routeCoordinates.push(coordinate);
-                    routeLayer.getSource().clear();
                     if (routeCoordinates.length > 1) {
                         const routeFeature = new ol.Feature({
                             geometry: new ol.geom.LineString(routeCoordinates)
                         });
+                        routeLayer.getSource().clear();
+                        routeLayer.getSource().addFeature(routeFeature);
+                    }
+                    // Обновляем lastPosition только для добавленных точек
+                    lastPosition = position;
+                } else {
+                    console.log('Point skipped: distance too small', distance.toFixed(2), 'meters');
+                }
+            } else if (mode === 'simulate') {
+                // Для имитации сохраняем текущее поведение
+                const distance = lastPosition ? haversineDistance(
+                    lastPosition.coords.latitude,
+                    lastPosition.coords.longitude,
+                    position.coords.latitude,
+                    position.coords.longitude
+                ) : Infinity;
+                console.log('Distance to last point (simulate):', distance.toFixed(2), 'meters');
+
+                if (distance > 2) {
+                    routeCoordinates.push(coordinate);
+                    if (routeCoordinates.length > 1) {
+                        const routeFeature = new ol.Feature({
+                            geometry: new ol.geom.LineString(routeCoordinates)
+                        });
+                        routeLayer.getSource().clear();
                         routeLayer.getSource().addFeature(routeFeature);
                     }
                 }
+                lastPosition = position;
             } else {
-                routeCoordinates.push(coordinate); // Первая точка
+                // Первая точка
+                routeCoordinates.push(coordinate);
+                lastPosition = position;
             }
 
-            // Сохраняем позицию
-            lastPosition = position;
-
             // Обновляем информацию
-            updateInfo(position, mode);
+            updateInfo(null, position, mode);
 
             console.log(`${mode} position:`, {
                 latitude: coords[1],
@@ -255,7 +284,7 @@
                     advice = 'Попробуйте обновить страницу.';
             }
             console.error('Geolocation error:', { code: error.code, message: error.message });
-            document.getElementById('info').textContent = `${errorMessage} ${advice}`;
+            updateInfo(`${errorMessage} ${advice}`);
         }
 
         // Переменные для отслеживания
@@ -273,7 +302,7 @@
                     { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
                 );
             } else {
-                document.getElementById('info').textContent = 'Геолокация не поддерживается.';
+                updateInfo('Геолокация не поддерживается.');
                 console.error('Geolocation API is not supported.');
             }
         });
@@ -294,7 +323,7 @@
                     lastPosition = null;
                     console.log('Tracking started, watchId:', watchId);
                 } else {
-                    document.getElementById('info').textContent = 'Геолокация не поддерживается.';
+                    updateInfo('Геолокация не поддерживается.');
                     console.error('Geolocation API is not supported.');
                 }
             } else {
@@ -309,29 +338,26 @@
         const simulateButton = document.getElementById('simulate-btn');
         simulateButton.addEventListener('click', function() {
             if (simulateInterval === null) {
-                // Начать имитацию
                 let baseLat = 55.7558; // Москва
                 let baseLon = 37.6173;
                 simulateInterval = setInterval(() => {
-                    // Имитируем перемещение (сдвиг на ~15 метров)
-                    baseLat += 0.000135; // ~15 метров по широте
-                    baseLon += 0.0002;   // ~15 метров по долготе
+                    baseLat += 0.000018; // ~2 метра по широте
+                    baseLon += 0.000027; // ~2 метра по долготе
                     const simulatedPosition = {
                         coords: {
                             latitude: baseLat,
                             longitude: baseLon,
-                            accuracy: 10 // Фиктивная точность
+                            accuracy: 10
                         }
                     };
                     handlePosition(simulatedPosition, 'simulate');
-                }, 2000); // Каждые 2 секунды для наглядности
+                }, 1000); // Каждую секунду
                 simulateButton.textContent = 'Остановить имитацию';
                 routeCoordinates = [];
                 routeLayer.getSource().clear();
                 lastPosition = null;
                 console.log('Simulation started');
             } else {
-                // Остановить имитацию
                 clearInterval(simulateInterval);
                 simulateInterval = null;
                 simulateButton.textContent = 'Начать имитацию';
